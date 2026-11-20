@@ -15,7 +15,8 @@ Implementation is under way. The design lives in a place `git status` will not s
 
 - `specs/001-go-mcp-sdk/` — `spec.md` (58 FR / 11 NFR / 15 SC), `plan.md`, `research.md` (R-001…R-019),
   `data-model.md`, `contracts/` (wire, core-api, transport, cli), `quickstart.md`, and
-  `tasks.md` (**125 tasks; its checkboxes are the work queue and the only progress record**).
+  `tasks.md` (**127 tasks — 125 planned plus 2 deferred (T126–T127); its checkboxes are the work
+  queue and the only progress record**).
 - `.specify/memory/constitution.md` — binding: 11 principles, merge gates, and the task
   iteration protocol. Read it before implementing anything.
 - `docs/decisions/0001-protocol-eras.md` — the FR-056 era decision record.
