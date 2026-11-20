@@ -27,11 +27,16 @@ credentials.json
 # user's
 notes/
 
-# Agents artefacts
+# Agents and spec artefacts — deliberately untracked so they can never enter the published
+# module zip (FR-033, NFR-008, SC-006). git archive only archives tracked files, so untracked
+# is the whole mechanism: no marker modules, no packaging step, no CI gate.
 .specify/
 .opencode/
+specs/
+docs/
+
+.pnpm-debug.log
 
 # thrash
 .DS_Store
 .idea
-
