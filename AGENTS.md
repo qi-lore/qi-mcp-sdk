@@ -1,10 +1,10 @@
 # AGENTS.md
 
 Independent Go SDK for the Model Context Protocol. **Implementation has begun**: `go.mod`,
-`go.work`, the six root package directories, `.golangci.yml`, and `.github/workflows/ci.yml` all
-exist, so `go build ./...` and `go vet ./...` compile real packages instead of printing
-`"./..." matched no packages`. Progress lives only in the checkboxes of
-`specs/001-go-mcp-sdk/tasks.md`.
+`go.work`, the six root package directories, `.golangci.yml`, and the `.github/workflows/`
+definitions (`ci.yml`, `commit-conventions.yml`) all exist, so `go build ./...` and `go vet ./...`
+compile real packages instead of printing `"./..." matched no packages`. Progress lives only in
+the checkboxes of `specs/001-go-mcp-sdk/tasks.md`.
 
 **Picking up interrupted work?** Jump to [Resuming an interrupted task](#resuming-an-interrupted-task) —
 a fresh session has no memory of what the previous one did, and this repo hides progress from git.
@@ -176,7 +176,9 @@ lands (T070, T073, T077, T081, T108, T112) — a fresh clone will not contain th
 ## Conventions that differ from defaults
 
 - **Commits: Conventional Commits AND single-line only.** Multi-line commit bodies are explicitly
-  forbidden (Principle IX). A one-line subject is the whole message.
+  forbidden (Principle IX). A one-line subject is the whole message. `.github/workflows/commit-conventions.yml`
+  enforces this on every pull request, and fails any feature branch not targeting `dev` or the
+  integration branch not targeting `main`.
 - Branches: feature branches from `main`; feature PRs target `dev`; only `dev → main` merges to
   `main`. `main` and `dev` both exist locally; the feature branch is `001-go-mcp-sdk`.
 - **No `origin` remote is configured.** Only the Gitt agent may push. Prepare a push-ready commit
@@ -202,9 +204,6 @@ lands (T070, T073, T077, T081, T108, T112) — a fresh clone will not contain th
 
 ## Open loose ends
 
-- Commit `3bf3dd0 "change gitignore"` on `001-go-mcp-sdk` violates FR-037/Principle IX. Fixing it
-  is a history change, so it needs explicit user approval first. Suggested subject:
-  `chore(gitignore): ignore spec artifacts and pnpm debug log`.
 - `.pnpm-debug.log` sits in a Go repo. It is ignored now; still on disk. Harmless.
 - SC-010 ("task reports visible in the issue or PR thread") has no repo-side home while the
   artifacts are untracked.
