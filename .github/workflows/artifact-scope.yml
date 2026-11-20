@@ -1,0 +1,67 @@
+# CI for FR-033, NFR-008, and SC-006 (Constitution: Documentation and Artifact
+# Isolation). Spec artifacts stay out of the published Go module zip by staying
+# *untracked*: every module-zip path is built from `git archive`, which archives
+# only tracked files, so an untracked artifact tree is unreachable by
+# construction (see research.md R-002).
+#
+# `.gitignore` alone cannot hold that guarantee. It has no effect on a file that
+# is already tracked, and `git add -f` bypasses it, so the property that actually
+# matters is "no path under these trees is tracked at the revision". This gate
+# asserts that property directly with `git ls-tree` — the same command R-002
+# documents — instead of trusting `.gitignore` to still be doing its job.
+#
+# The gate is a plain shell check rather than a third-party action so it cannot
+# change behaviour underneath a green run. `actions/checkout` is pinned to the
+# same exact release as ci.yml and commit-conventions.yml.
+
+name: artifact-scope
+
+# Mirrors ci.yml: dev and main are the only branches that feed a release, and
+# pull_request covers feature branches targeting them.
+on:
+  push:
+    branches: [dev, main]
+  pull_request:
+    branches: [dev, main]
+
+permissions:
+  contents: read
+
+jobs:
+  tracked-set:
+    runs-on: ubuntu-latest
+    steps:
+      # A shallow checkout is sufficient: the gate inspects HEAD only, never
+      # history.
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+
+      - name: Assert artifact paths are listed in .gitignore
+        run: |
+          set -euo pipefail
+          status=0
+          for entry in 'specs/' '.specify/' '.opencode/' 'docs/'; do
+            if ! grep -qxF "$entry" .gitignore; then
+              echo "::error::$entry is not listed in .gitignore (FR-033)"
+              status=1
+            fi
+          done
+          [ "$status" -eq 0 ] || exit 1
+          echo "artifact scope OK: all four artifact paths are listed in .gitignore"
+
+      - name: Assert no artifact path is tracked at HEAD
+        run: |
+          set -euo pipefail
+          paths=(specs .specify .opencode docs)
+          # `git ls-tree` reads the committed tree, so a force-added file shows
+          # up here even though `.gitignore` would not have stopped it. No
+          # output is the pass condition.
+          tracked=$(git ls-tree -r --name-only HEAD -- "${paths[@]}")
+          if [ -n "$tracked" ]; then
+            while IFS= read -r path; do
+              echo "::error::spec artifact tracked at HEAD: $path (FR-033, NFR-008, SC-006)"
+            done <<< "$tracked"
+            echo "::error::.gitignore cannot untrack an added file; remove it with 'git rm --cached <path>'"
+            exit 1
+          fi
+          echo "artifact scope OK: no file under ${paths[*]} is tracked at HEAD"

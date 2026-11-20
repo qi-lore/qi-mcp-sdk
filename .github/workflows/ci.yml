@@ -1,0 +1,46 @@
+# CI for NFR-006 and FR-038: build, vet, the configured linter, and the race
+# detector on the integration branches. Feature branches are covered by the
+# pull_request trigger, which is what FR-038 asks CI to enforce.
+#
+# Actions are pinned to exact releases rather than moving major tags so a run
+# cannot change underneath a green commit. golangci-lint is pinned to a v2
+# release because .golangci.yml uses the v2 configuration schema.
+
+name: ci
+
+on:
+  push:
+    branches: [dev, main]
+  pull_request:
+    branches: [dev, main]
+
+permissions:
+  contents: read
+
+jobs:
+  build-test-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+
+      - name: Set up Go
+        uses: actions/setup-go@v7.1.0
+        with:
+          # Reads the language floor from go.mod so CI cannot drift from it.
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build
+        run: go build ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Lint
+        uses: golangci/golangci-lint-action@v9.3.0
+        with:
+          version: v2.15.0
+
+      - name: Test
+        run: go test -race ./...
