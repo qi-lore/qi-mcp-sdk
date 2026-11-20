@@ -485,6 +485,28 @@ func TestHTTPHandlerMapsHandlerErrorToJSONRPCError(t *testing.T) {
 		assertErrorResponse(t, rec, core.CodeUnsupportedVersion, "3")
 	})
 
+	t.Run("an auth rejection is 401 or 403, never 500", func(t *testing.T) {
+		// data-model.md's error table fixes this accompaniment: AuthError — and the
+		// ErrAuth sentinel wrapping it — is "typed → HTTP 401/403 before dispatch"
+		// (FR-025). middleware.Auth rejects before the handler, and only the transport
+		// can turn that rejection into an HTTP status, so answering 5xx would both
+		// contradict the table and disguise an authentication failure as an internal
+		// error. Which of the two is used is left open: the table names both.
+		cases := map[string]error{
+			"AuthError": &core.AuthError{Reason: "expired"},
+			"ErrAuth":   fmt.Errorf("auth: %w", core.ErrAuth),
+		}
+		for name, err := range cases {
+			t.Run(name, func(t *testing.T) {
+				rec := postRequest(t, HTTPHandler(newStubHandler(replyWithError(err))), body, nil)
+
+				if rec.Code != http.StatusUnauthorized && rec.Code != http.StatusForbidden {
+					t.Fatalf("status = %d, want 401 or 403 for an auth rejection: %s", rec.Code, rec.Body.Bytes())
+				}
+			})
+		}
+	})
+
 	t.Run("any other error is -32603 and 500", func(t *testing.T) {
 		rec := postRequest(t, HTTPHandler(newStubHandler(replyWithError(errors.New("boom")))), body, nil)
 
