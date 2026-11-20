@@ -248,6 +248,37 @@ func TestSSEReaderDefaultMaxEventBytesIsFourMiB(t *testing.T) {
 	})
 }
 
+// TestSSEReaderTerminalErrorIsSticky pins decision 0006: once Next has reported a terminal
+// condition — io.EOF, or a typed error because an event exceeded the bound — the reader is
+// exhausted and every later call returns that same error, never resuming mid-stream.
+func TestSSEReaderTerminalErrorIsSticky(t *testing.T) {
+	t.Run("after io.EOF", func(t *testing.T) {
+		r := newSSEReader(strings.NewReader("data: one\n\n"))
+		if _, err := r.Next(); err != nil {
+			t.Fatalf("first Next: %v", err)
+		}
+		for i := 0; i < 2; i++ {
+			if _, err := r.Next(); !errors.Is(err, io.EOF) {
+				t.Fatalf("Next() after EOF = %v, want io.EOF (terminal error is sticky)", err)
+			}
+		}
+	})
+
+	t.Run("after a bound error", func(t *testing.T) {
+		// The oversized event is followed by a well-formed one; a reader that resumed
+		// mid-stream would surface "after" as a fresh event instead of staying exhausted.
+		in := "data: " + strings.Repeat("x", 256) + "\n\n" + "data: after\n\n"
+		r := newSSEReader(strings.NewReader(in), withMaxEventBytes(64))
+
+		if _, err := r.Next(); !errors.Is(err, core.ErrTransport) {
+			t.Fatalf("first Next() = %v, want an error matching core.ErrTransport", err)
+		}
+		if _, err := r.Next(); !errors.Is(err, core.ErrTransport) {
+			t.Fatalf("second Next() = %v, want the same typed error (sticky), not the next event", err)
+		}
+	})
+}
+
 // TestSSEWriterEmitsDataOnlyEvent pins the exact bytes of the canonical minimal event:
 // a lone data field terminated by the blank line that dispatches it. A zero-valued
 // event, id, and retry emit no line.
