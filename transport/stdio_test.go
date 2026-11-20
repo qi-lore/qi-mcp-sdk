@@ -355,3 +355,37 @@ func TestStdioDefaultMaxLineBytesIsFourMiB(t *testing.T) {
 		parseErrorFrame(t, out.Bytes())
 	})
 }
+
+// TestStdioDeliveredLineSurvivesBufferRefill pins that a line handed to Receive is a copy
+// of the reader's bytes, not a slice aliasing the transport's bufio buffer. When the
+// transport reads further and that buffer refills, an already-delivered line must not be
+// overwritten — Receive hands the caller a slice they may hold across the reader's next
+// read (decision 0004). The tiny WithMaxLineBytes makes the buffer refill between lines;
+// every T032 test input fits a single fill, so only this test exercises the copy.
+func TestStdioDeliveredLineSurvivesBufferRefill(t *testing.T) {
+	const max = 16 // far smaller than the whole stream: forces the buffer to refill
+	lines := make([]string, 8)
+	for i := range lines {
+		lines[i] = fmt.Sprintf(`{"i":%d}`, i)
+	}
+	var out syncBuffer
+	tr := Stdio(strings.NewReader(strings.Join(lines, "\n")+"\n"), &out, WithMaxLineBytes(max))
+	t.Cleanup(func() { _ = tr.Close() })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	held := make([][]byte, 0, len(lines))
+	for i := range lines {
+		frame, err := tr.Receive(ctx)
+		if err != nil {
+			t.Fatalf("Receive #%d: %v", i, err)
+		}
+		held = append(held, frame)
+	}
+	for i, frame := range held {
+		if string(frame) != lines[i] {
+			t.Errorf("held line %d = %q, want %q (delivered slice aliases the read buffer)", i, frame, lines[i])
+		}
+	}
+}
