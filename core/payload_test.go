@@ -14,9 +14,10 @@ import (
 // TextContent constructor (FR-013, FR-015).
 //
 // The symbols exercised here — ToolCall, ToolResult, ContentBlock, TextContent,
-// ResourceRead, and PromptGet — belong to payload.go (T031). This file is written first and
-// is expected to fail to compile until that task lands, so the red is attributable to
-// payload.go. It names no symbol owned by another core file: the `_meta` members it reads
+// ResourceRead, PromptGet, and the two handler results ResourceResult and PromptResult with
+// their element types ResourceContent and PromptMessage — belong to payload.go (T031). This
+// file is written first and is expected to fail to compile until that task lands, so the red
+// is attributable to payload.go. It names no symbol owned by another core file: the `_meta` members it reads
 // are typed *RequestMeta (meta.go, T016) and the `resultType` member is typed ResultType
 // (result.go, T023), but both are referenced only through the payload struct fields this
 // file is pinning, exactly as meta_test.go reaches ClientCapabilities transitively.
@@ -40,6 +41,21 @@ var (
 	_ = ContentBlock{Type: "", Text: "", Data: "", MimeType: "", URI: ""}
 	_ = ResourceRead{URI: "", Meta: (*RequestMeta)(nil)}
 	_ = PromptGet{Name: "", Arguments: map[string]string(nil), Meta: (*RequestMeta)(nil)}
+	_ = ResourceContent{URI: "", MimeType: "", Text: "", Blob: ""}
+	_ = ResourceResult{
+		Contents:      []ResourceContent{},
+		ResultType:    ResultComplete,
+		InputRequests: []InputRequest{},
+		RequestState:  (*RequestState)(nil),
+	}
+	_ = PromptMessage{Role: "", Content: ContentBlock{}}
+	_ = PromptResult{
+		Description:   "",
+		Messages:      []PromptMessage{},
+		ResultType:    ResultComplete,
+		InputRequests: []InputRequest{},
+		RequestState:  (*RequestState)(nil),
+	}
 
 	// TextContent is a constructor, not a method: callers build the common block without
 	// hand-writing the discriminator (data-model.md Section 6b).
@@ -276,4 +292,169 @@ func TestPromptGetWireShapeMatchesDataModel(t *testing.T) {
 	if !maps.Equal(got.Arguments, want) {
 		t.Errorf("Arguments = %v, want %v", got.Arguments, want)
 	}
+}
+
+// TestResourceResultWireShapeMatchesDataModel pins what a ResourceHandler returns: the
+// authoritative MCP 2026-07-28 `resources/read` result — a `contents` array whose items each
+// carry a `uri` and, depending on the resource, a `mimeType` with either inline `text` or a
+// base64 `blob` — inside the result envelope (FR-013, FR-015). A single read may return more
+// than one item, for example for a directory resource.
+func TestResourceResultWireShapeMatchesDataModel(t *testing.T) {
+	const body = `{"resultType":"complete","contents":[` +
+		`{"uri":"file:///project/src/main.rs","mimeType":"text/x-rust","text":"fn main() {}"},` +
+		`{"uri":"file:///project/logo.png","mimeType":"image/png","blob":"iVBORw0KGgo="}]}`
+
+	var got ResourceResult
+	if err := json.Unmarshal([]byte(body), &got); err != nil {
+		t.Fatalf("decode resource result %s: %v", body, err)
+	}
+	if got.ResultType != ResultComplete {
+		t.Errorf("ResultType = %q, want %q", got.ResultType, ResultComplete)
+	}
+
+	want := []ResourceContent{
+		{URI: "file:///project/src/main.rs", MimeType: "text/x-rust", Text: "fn main() {}"},
+		{URI: "file:///project/logo.png", MimeType: "image/png", Blob: "iVBORw0KGgo="},
+	}
+	if !slices.Equal(got.Contents, want) {
+		t.Errorf("Contents = %+v, want %+v", got.Contents, want)
+	}
+}
+
+// TestResourceResultAlwaysCarriesContentsMember pins the mandatory member: `contents` is the
+// one member a ResourceResult must always encode, so a read can never reach the wire with no
+// place to put its contents, while the MRTR members stay optional.
+func TestResourceResultAlwaysCarriesContentsMember(t *testing.T) {
+	if got := jsonMemberNames(t, ResourceResult{}); !slices.Equal(got, []string{"contents"}) {
+		t.Errorf("zero ResourceResult encodes members %v, want [contents]", got)
+	}
+}
+
+// TestResourceContentOmitsVacantMembers pins each ResourceContent variant as the
+// authoritative revision uses it: a text resource sets `text`, a binary resource sets the
+// base64 `blob`, and `mimeType` is optional — every vacant member is omitted rather than
+// encoded as an empty string.
+func TestResourceContentOmitsVacantMembers(t *testing.T) {
+	tests := []struct {
+		name        string
+		body        string
+		want        ResourceContent
+		wantMembers []string
+	}{
+		{"text", `{"uri":"file:///a.txt","mimeType":"text/plain","text":"hi"}`,
+			ResourceContent{URI: "file:///a.txt", MimeType: "text/plain", Text: "hi"},
+			[]string{"mimeType", "text", "uri"}},
+		{"blob", `{"uri":"file:///a.bin","blob":"AAEC"}`,
+			ResourceContent{URI: "file:///a.bin", Blob: "AAEC"},
+			[]string{"blob", "uri"}},
+		{"uri only", `{"uri":"file:///a"}`,
+			ResourceContent{URI: "file:///a"},
+			[]string{"uri"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var got ResourceContent
+			if err := json.Unmarshal([]byte(tt.body), &got); err != nil {
+				t.Fatalf("decode resource content %s: %v", tt.body, err)
+			}
+			if got != tt.want {
+				t.Errorf("decoded %+v, want %+v", got, tt.want)
+			}
+			if members := jsonMemberNames(t, got); !slices.Equal(members, tt.wantMembers) {
+				t.Errorf("encodes members %v, want %v", members, tt.wantMembers)
+			}
+		})
+	}
+}
+
+// TestPromptResultWireShapeMatchesDataModel pins what a PromptHandler returns: the
+// authoritative MCP 2026-07-28 `prompts/get` result — an optional human-readable
+// `description` and a `messages` array whose items each pair a `role` with a content block —
+// inside the result envelope (FR-013, FR-015).
+func TestPromptResultWireShapeMatchesDataModel(t *testing.T) {
+	const body = `{"resultType":"complete","description":"Code review prompt","messages":[` +
+		`{"role":"user","content":{"type":"text","text":"Please review this code"}},` +
+		`{"role":"assistant","content":{"type":"text","text":"Sure"}}]}`
+
+	var got PromptResult
+	if err := json.Unmarshal([]byte(body), &got); err != nil {
+		t.Fatalf("decode prompt result %s: %v", body, err)
+	}
+	if got.ResultType != ResultComplete {
+		t.Errorf("ResultType = %q, want %q", got.ResultType, ResultComplete)
+	}
+	if want := "Code review prompt"; got.Description != want {
+		t.Errorf("Description = %q, want %q", got.Description, want)
+	}
+	if len(got.Messages) != 2 {
+		t.Fatalf("Messages has %d entries, want 2", len(got.Messages))
+	}
+	if want := (PromptMessage{Role: "user", Content: TextContent("Please review this code")}); got.Messages[0] != want {
+		t.Errorf("Messages[0] = %+v, want %+v", got.Messages[0], want)
+	}
+	if want := (PromptMessage{Role: "assistant", Content: TextContent("Sure")}); got.Messages[1] != want {
+		t.Errorf("Messages[1] = %+v, want %+v", got.Messages[1], want)
+	}
+}
+
+// TestPromptResultAlwaysCarriesMessagesMember pins the mandatory member: `messages` is the
+// one member a PromptResult must always encode, so a rendered prompt can never reach the
+// wire with no place to put its messages, while `description` and the MRTR members stay
+// optional.
+func TestPromptResultAlwaysCarriesMessagesMember(t *testing.T) {
+	if got := jsonMemberNames(t, PromptResult{}); !slices.Equal(got, []string{"messages"}) {
+		t.Errorf("zero PromptResult encodes members %v, want [messages]", got)
+	}
+}
+
+// TestResourceAndPromptResultsCarryMRTRFields pins that both handler results reuse the same
+// optional MRTR members as ToolResult (FR-006, FR-007): a result may be marked
+// `input_required` and carry `inputRequests` and an opaque `requestState` instead of final
+// content, so a resource read or prompt get can participate in a round trip.
+func TestResourceAndPromptResultsCarryMRTRFields(t *testing.T) {
+	const state = `{"step":2}`
+
+	t.Run("resource result", func(t *testing.T) {
+		const body = `{"resultType":"input_required","contents":[{"uri":"file:///a"}],` +
+			`"inputRequests":[{"id":"q1","method":"elicitation/create","params":{"message":"which?"}}],` +
+			`"requestState":{"step":2}}`
+
+		var got ResourceResult
+		if err := json.Unmarshal([]byte(body), &got); err != nil {
+			t.Fatalf("decode resource result %s: %v", body, err)
+		}
+		if got.ResultType != ResultInputRequired {
+			t.Errorf("ResultType = %q, want %q", got.ResultType, ResultInputRequired)
+		}
+		if len(got.InputRequests) != 1 || got.InputRequests[0].ID != "q1" {
+			t.Errorf("InputRequests = %+v, want one request with id %q", got.InputRequests, "q1")
+		}
+		if got.RequestState == nil || string(got.RequestState.Value) != state {
+			t.Errorf("RequestState = %+v, want the decoded state %s", got.RequestState, state)
+		}
+	})
+
+	t.Run("prompt result", func(t *testing.T) {
+		const body = `{"resultType":"input_required","messages":[{"role":"user","content":{"type":"text","text":"x"}}],` +
+			`"inputRequests":[{"id":"q1","method":"elicitation/create","params":{"message":"which?"}}],` +
+			`"requestState":{"step":2}}`
+
+		var got PromptResult
+		if err := json.Unmarshal([]byte(body), &got); err != nil {
+			t.Fatalf("decode prompt result %s: %v", body, err)
+		}
+		if got.ResultType != ResultInputRequired {
+			t.Errorf("ResultType = %q, want %q", got.ResultType, ResultInputRequired)
+		}
+		if len(got.Messages) != 1 || got.Messages[0].Role != "user" {
+			t.Errorf("Messages = %+v, want one user message", got.Messages)
+		}
+		if len(got.InputRequests) != 1 || got.InputRequests[0].ID != "q1" {
+			t.Errorf("InputRequests = %+v, want one request with id %q", got.InputRequests, "q1")
+		}
+		if got.RequestState == nil || string(got.RequestState.Value) != state {
+			t.Errorf("RequestState = %+v, want the decoded state %s", got.RequestState, state)
+		}
+	})
 }
