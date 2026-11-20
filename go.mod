@@ -1,3 +1,3 @@
 module github.com/qi-lore/qi-mcp-sdk
 
-go 1.23.0
+go 1.23
