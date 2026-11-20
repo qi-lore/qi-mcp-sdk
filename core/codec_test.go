@@ -12,11 +12,11 @@ import (
 // result/error, a notification carries no id, and a malformed body is rejected
 // rather than decoded (FR-001, FR-018).
 //
-// Encode is exercised as the marshaller core-api.md defines it — it is given a
-// well-formed envelope and must put a well-formed frame on the wire. It is NOT
-// asserted to police its input by reporting an error: neither V1 nor V2 requires a
-// sending-side rejection (V1 rejects at dispatch, FR-018 at the server), so a
-// strict-encode policy would need a decision record before it could be tested.
+// Encode is exercised as the validating marshaler the contract now defines: given a
+// well-formed envelope it puts a well-formed frame on the wire, and given an envelope
+// that violates V1 or V2 it reports an error and returns no frame bytes. That
+// sending-side policy is a project decision rather than a reading of V1/V2 on their own
+// (V1 rejects at dispatch, FR-018 at the server): docs/decisions/0002-codec-validation.md.
 
 // jsonRPC20 is the only accepted value of the envelope's `jsonrpc` member (V1).
 // It is spelled out here instead of reusing a package constant so that changing
@@ -203,6 +203,88 @@ func TestEncodeAlwaysEmitsJSONRPC20(t *testing.T) {
 			frame := mustEncode(t, tt.in)
 			if got := membersOf(t, frame)["jsonrpc"]; !bytes.Equal(got, json.RawMessage(`"2.0"`)) {
 				t.Errorf("encoded %s carries jsonrpc %s, want %q (V1): %s", tt.name, got, jsonRPC20, frame)
+			}
+		})
+	}
+}
+
+// TestEncodeRejectsEnvelopeWithoutJSONRPC20 pins V1 in the sending direction
+// (decision 0002): the codec MUST NOT put an envelope on the wire whose jsonrpc member
+// is anything but "2.0". A caller's explicit, wrong version is an error rather than
+// silently rewritten, so the field never lies about what was sent.
+func TestEncodeRejectsEnvelopeWithoutJSONRPC20(t *testing.T) {
+	tests := []struct {
+		name string
+		in   any
+	}{
+		{
+			name: "request with no jsonrpc member",
+			in:   &Request{ID: json.RawMessage("1"), Method: "tools/list"},
+		},
+		{
+			name: "request with another JSON-RPC version",
+			in:   &Request{JSONRPC: "1.0", ID: json.RawMessage("1"), Method: "tools/list"},
+		},
+		{
+			name: "request whose jsonrpc carries an MCP revision",
+			in:   &Request{JSONRPC: "2026-07-28", ID: json.RawMessage("1"), Method: "tools/list"},
+		},
+		{
+			name: "response with no jsonrpc member",
+			in:   &Response{ID: json.RawMessage("1"), Result: json.RawMessage(`{"resultType":"complete"}`)},
+		},
+		{
+			name: "notification with another JSON-RPC version",
+			in:   &Notification{JSONRPC: "1.0", Method: "notifications/tools/list_changed"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			frame, err := Encode(tt.in)
+			if err == nil {
+				t.Fatalf("Encode(%+v) = %s, want an error: a non-%q envelope must not reach the wire",
+					tt.in, frame, jsonRPC20)
+			}
+			if len(frame) != 0 {
+				t.Errorf("Encode returned %d bytes alongside its error: %s", len(frame), frame)
+			}
+		})
+	}
+}
+
+// TestEncodeRejectsResponseWithoutExactlyOneOfResultOrError pins V2 in the sending
+// direction (decision 0002): a Response carrying both members, or neither, is rejected
+// rather than emitted.
+func TestEncodeRejectsResponseWithoutExactlyOneOfResultOrError(t *testing.T) {
+	tests := []struct {
+		name string
+		in   *Response
+	}{
+		{
+			name: "both result and error",
+			in: &Response{
+				JSONRPC: jsonRPC20,
+				ID:      json.RawMessage("1"),
+				Result:  json.RawMessage(`{"resultType":"complete"}`),
+				Error:   &Error{Code: -32603, Message: "internal error"},
+			},
+		},
+		{
+			name: "neither result nor error",
+			in:   &Response{JSONRPC: jsonRPC20, ID: json.RawMessage("1")},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			frame, err := Encode(tt.in)
+			if err == nil {
+				t.Fatalf("Encode(%+v) = %s, want an error: a Response carries exactly one of result/error (V2)",
+					tt.in, frame)
+			}
+			if len(frame) != 0 {
+				t.Errorf("Encode returned %d bytes alongside its error: %s", len(frame), frame)
 			}
 		})
 	}
