@@ -112,7 +112,9 @@ Per `constitution.md` "Task Iteration Protocol" and FR-045–FR-050:
 
 1. Complete **exactly one** task from `tasks.md`, then stop.
 2. Report: task id and outcome, what changed and why, checks run with results, deviations/risks.
-   No boilerplate — restating the task description is not a report.
+   No boilerplate — restating the task description is not a report. Unless a task is scoped to
+   docs only, the checks that were run MUST include `go build ./...`, `go vet ./...`,
+   `go test -race ./...`, and `golangci-lint run ./...` (v2 — see "Local toolchain paths").
 3. **Wait** for an explicit instruction: `rework`, `create pull request`, or `next task`.
 4. Never begin the next task, open a PR, or merge on your own initiative.
 5. A task that cannot be finished is reported **blocked** with the concrete blocker. Never
@@ -138,11 +140,15 @@ anything.
 - **Never call, read, or resolve anything under `/opt/homebrew/bin`** — not even a version probe.
   That Homebrew prefix is not ours.
 - Our Homebrew is `/Users/aiagent/homebrew/bin/brew`. Install and look up tools there.
-- `golangci-lint` at `/Users/aiagent/go/bin/golangci-lint` is v1.64.8 and cannot type-check a
-  package that imports the standard library under the go1.27 toolchain (`export data version 5
-  is greater than maximum supported version 2`). It reports exit 0 for packages that import
-  nothing, so that result is not evidence of linting. Linting real code needs a v2 binary, which
-  is not installed in our prefix yet.
+- `golangci-lint` at `/Users/aiagent/go/bin/golangci-lint` is **v1.64.8 and must not be used**: it
+  cannot type-check a package that imports the standard library under the go1.27 toolchain
+  (`export data version 5 is greater than maximum supported version 2`), and it reports exit 0 for
+  packages that import nothing, so its "0 issues" is not evidence of linting.
+- The **v2** binary is now installed in our prefix and is the one on `PATH`:
+  `/Users/aiagent/homebrew/bin/golangci-lint` → `Cellar/golangci-lint/2.15.0/bin/golangci-lint`
+  (`2.15.0`, built with go1.27.2). It is the only sanctioned linter and honors `.golangci.yml`.
+  Verified 2026-11-20: it flags planted `errcheck`/`gofmt` violations, so a green run from it is
+  real evidence of linting.
 - **Never use `curl`.** Use `my_curl`, the alias for `/Users/aiagent/homebrew/opt/curl/bin/curl`.
   Aliases do not exist in non-interactive shells, so invoke that absolute path directly.
 
@@ -152,6 +158,7 @@ anything.
 go build ./...            # compiles the six root packages today
 go vet ./...
 go test -race ./...       # required by NFR-006
+golangci-lint run ./...   # v2 ONLY; part of every task's verification (see "Local toolchain paths")
 go test ./core -run TestDecode -race        # single package / single test
 GOWORK=off go list -m all                   # inside a temp consumer module: dependency leakage
 ```
@@ -165,8 +172,8 @@ golangci-lint run ./...     # v2 ONLY. v1.64.8 prints "0 issues" for real code a
 golangci-lint cache clean   # stale cache can hide a violation; clean before trusting a run
 ```
 
-Verified against golangci-lint 2.15.0. The installed `/Users/aiagent/go/bin/golangci-lint` is v1
-and must not be used — see "Local toolchain paths".
+Verified against golangci-lint 2.15.0, the binary installed in our Homebrew prefix and on `PATH`.
+The `/Users/aiagent/go/bin/golangci-lint` v1 binary must not be used — see "Local toolchain paths".
 
 Artifact-scope check (SC-006), reproducible without tooling:
 
