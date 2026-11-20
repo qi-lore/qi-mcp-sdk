@@ -3,6 +3,7 @@ package transport
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -33,17 +34,36 @@ import (
 //     errors.Is(err, core.ErrTransport), rather than deferring the failure to the first
 //     Send.
 //
+// The context and failure semantics decision 0009 left implicit are fixed in
+// docs/decisions/0010-streamable-http-dialer-failure.md:
+//
+//   - Send's context bounds the request only until the response header arrives, the phase
+//     in which Send blocks; once Send returns, the body is read under the transport's own
+//     lifetime. Receive's context bounds only that Receive call. A caller's context
+//     typically ends when Send returns, so binding the whole body read to it would abort
+//     the stream the moment Send returned and defeat R-016's streaming.
+//   - A body that ends normally (EOF) contributes no further frames and is not an error: a
+//     JSON body is one frame (or none, when empty), and an SSE body's stream is simply
+//     finished. A body that fails to read, or exceeds the 4 MiB bound, is a transport
+//     failure: the dialer fails terminally and every later Send and Receive returns a
+//     typed error matchable with errors.Is(err, core.ErrTransport), rather than Receive
+//     blocking forever (transport.md Section 1). The framed channel carries no request
+//     identity, so the failure is transport-wide.
+//
 // Send returns once the response header has arrived and hands the body to a reader
 // goroutine, so a long-lived SSE stream yields its first frame without Send blocking on
 // the whole body. The reader goroutines are owned by the transport and released on Close
-// or on context cancellation (R-017, V20): Close cancels the transport context, which
-// aborts the in-flight requests. Nothing is ever written to standard output (FR-057,
-// NFR-011).
+// or on a terminal failure (R-017, V20): the transport's context is cancelled by Close or
+// by the first body failure, which aborts the in-flight requests. Nothing is ever written
+// to standard output (FR-057, NFR-011).
 
 // dialAcceptHeader is the Accept value the binding requires of a client: it negotiates a
 // JSON body or an SSE body (transport.md Section 4). It is a private constant because the
 // package's test files already declare the same literal under their own name.
 const dialAcceptHeader = "application/json, text/event-stream"
+
+// errResponseBodyTooLarge marks a JSON response body that exceeded the configured bound.
+var errResponseBodyTooLarge = errors.New("transport: http response body exceeds maximum size")
 
 // dialConfig holds the resolved Streamable HTTP dialer options. It is unexported because
 // HTTPDialOption is the only public knob (contracts/transport.md Section 2).
@@ -85,10 +105,11 @@ func StreamableHTTPDial(endpoint string, opts ...HTTPDialOption) (core.Transport
 	}
 
 	// ctx is the transport's lifetime: Close cancels it, which aborts every in-flight
-	// request and unblocks the reader goroutines. It is deliberately not derived from a
+	// request and unblocks the reader goroutines; a body failure cancels it too, carrying
+	// the read error as the cancellation cause. It is deliberately not derived from a
 	// caller's Send context, whose lifetime ends when Send returns while the response
-	// body may still be streaming.
-	ctx, cancel := context.WithCancel(context.Background())
+	// body may still be streaming (decision 0010).
+	ctx, cancel := context.WithCancelCause(context.Background())
 	return &httpDialer{
 		endpoint: u,
 		client:   cfg.client,
@@ -104,16 +125,17 @@ type httpDialer struct {
 	endpoint *url.URL
 	client   *http.Client
 
-	// ctx is cancelled by Close; it bounds every request and unblocks Receive, the
-	// reader goroutines, and a Send waiting on the response header.
+	// ctx is the transport's lifetime: it is cancelled by Close, or by the first body
+	// failure, and bounds every request. Its cancellation cause is the typed transport
+	// error Send and Receive report (closedErr for Close, the read error otherwise).
 	ctx    context.Context
-	cancel context.CancelFunc
+	cancel context.CancelCauseFunc
 
 	// frames carries the frames the response bodies produce. Receive is the single
 	// consumer (core.Transport allows at most one receiving goroutine).
 	frames chan []byte
 
-	// wg tracks the body-reading goroutines, so they are accounted for across Close.
+	// wg tracks the body-reading goroutines, so they are accounted for across a failure.
 	wg sync.WaitGroup
 
 	// mu guards closed.
@@ -127,23 +149,24 @@ type httpDialer struct {
 // streamed by a goroutine the transport owns, so a long-lived SSE response yields its
 // first frame without Send blocking on the whole body (R-016).
 func (d *httpDialer) Send(ctx context.Context, frame []byte) error {
-	if d.isClosed() {
-		return d.closedErr()
+	if err := d.doneErr(); err != nil {
+		return err
 	}
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("%w: send: %w", core.ErrTransport, err)
 	}
 
-	// The request lives under the transport's context so Close aborts it, while the
-	// caller's context cancels it only for as long as Send is blocked: stop() detaches
-	// the caller's context on return, leaving the body to be streamed afterwards.
-	reqCtx, cancel := context.WithCancel(d.ctx)
-	stop := context.AfterFunc(ctx, cancel)
+	// The request lives under the transport's context so Close — or a body failure —
+	// aborts it, while the caller's context cancels it only for as long as Send is
+	// blocked: stop() detaches the caller's context on return, leaving the body to be
+	// streamed afterwards (decision 0010).
+	reqCtx, reqCancel := context.WithCancel(d.ctx)
+	stop := context.AfterFunc(ctx, reqCancel)
 	defer stop()
 
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, d.endpoint.String(), bytes.NewReader(frame))
 	if err != nil {
-		cancel()
+		reqCancel()
 		return fmt.Errorf("%w: send: %w", core.ErrTransport, err)
 	}
 	req.Header.Set("Content-Type", "application/json")
@@ -151,7 +174,7 @@ func (d *httpDialer) Send(ctx context.Context, frame []byte) error {
 
 	resp, err := d.client.Do(req)
 	if err != nil {
-		cancel()
+		reqCancel()
 		// A cancelled caller context surfaces as the caller's error, not the round
 		// trip's incidental one, so the caller can tell the two apart.
 		if ctxErr := ctx.Err(); ctxErr != nil {
@@ -163,7 +186,7 @@ func (d *httpDialer) Send(ctx context.Context, frame []byte) error {
 	d.wg.Add(1)
 	go func() {
 		defer d.wg.Done()
-		defer cancel()
+		defer reqCancel()
 		defer func() { _ = resp.Body.Close() }()
 		d.readResponseBody(resp)
 	}()
@@ -171,11 +194,12 @@ func (d *httpDialer) Send(ctx context.Context, frame []byte) error {
 }
 
 // Receive returns the next frame a response body produced. It blocks until a frame is
-// available, the caller's context is done, or the transport is closed; after Close it
-// returns a typed transport error rather than blocking (transport.md Section 1).
+// available, the caller's context is done, or the transport ends — on Close or on a body
+// failure — after which it returns a typed transport error rather than blocking forever
+// (transport.md Section 1).
 func (d *httpDialer) Receive(ctx context.Context) ([]byte, error) {
-	if d.isClosed() {
-		return nil, d.closedErr()
+	if err := d.doneErr(); err != nil {
+		return nil, err
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, fmt.Errorf("%w: receive: %w", core.ErrTransport, err)
@@ -183,7 +207,7 @@ func (d *httpDialer) Receive(ctx context.Context) ([]byte, error) {
 
 	select {
 	case <-d.ctx.Done():
-		return nil, d.closedErr()
+		return nil, d.ctxErr()
 	case <-ctx.Done():
 		return nil, fmt.Errorf("%w: receive: %w", core.ErrTransport, ctx.Err())
 	case frame := <-d.frames:
@@ -203,12 +227,15 @@ func (d *httpDialer) Close() error {
 	d.closed = true
 	d.mu.Unlock()
 
-	d.cancel()
+	// The first cancellation wins: if a body failure already ended the transport, the
+	// read error stays the reported cause (context.CancelCauseFunc ignores later calls).
+	d.cancel(fmt.Errorf("%w: transport closed", core.ErrTransport))
 	return nil
 }
 
 // readResponseBody turns one response body into frames on d.frames, choosing the shape
-// from the response Content-Type (decision 0009).
+// from the response Content-Type (decision 0009). A normal end of body delivers no further
+// frames; a read failure or an over-bound body fails the transport (decision 0010).
 func (d *httpDialer) readResponseBody(resp *http.Response) {
 	if strings.Contains(strings.ToLower(resp.Header.Get("Content-Type")), "text/event-stream") {
 		d.streamSSEBody(resp.Body)
@@ -218,13 +245,21 @@ func (d *httpDialer) readResponseBody(resp *http.Response) {
 }
 
 // streamSSEBody delivers one frame per event, in order, as the stream produces them
-// (R-016). It returns at end of stream or on the first read error; nothing further is
-// delivered from this body.
+// (R-016). End of stream ends this body's frames and is not an error; any other read
+// failure — including the reader's own over-bound typed error (transport.md Section 5) —
+// fails the transport.
 func (d *httpDialer) streamSSEBody(r io.Reader) {
 	reader := newSSEReader(r)
 	for {
 		ev, err := reader.Next()
 		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return
+			}
+			if !errors.Is(err, core.ErrTransport) {
+				err = fmt.Errorf("%w: read response body: %w", core.ErrTransport, err)
+			}
+			d.fail(err)
 			return
 		}
 		if !d.deliver([]byte(ev.Data)) {
@@ -234,21 +269,26 @@ func (d *httpDialer) streamSSEBody(r io.Reader) {
 }
 
 // deliverJSONBody delivers a JSON response body as exactly one frame, and an empty body —
-// the 202 a notification receives — as no frame. The body is bounded by the same 4 MiB
-// default as the server side; a body over the bound is dropped rather than delivered
-// (R-019).
+// the 202 a notification receives — as no frame. A read failure fails the transport; the
+// body is bounded by the same 4 MiB default as the server side, and an over-bound body
+// fails the transport rather than being dropped silently (R-019, decision 0010).
 func (d *httpDialer) deliverJSONBody(r io.Reader) {
 	body, err := io.ReadAll(io.LimitReader(r, defaultMaxBodyBytes+1))
 	if err != nil {
+		d.fail(fmt.Errorf("%w: read response body: %w", core.ErrTransport, err))
 		return
 	}
-	if int64(len(body)) > defaultMaxBodyBytes || len(body) == 0 {
+	if int64(len(body)) > defaultMaxBodyBytes {
+		d.fail(fmt.Errorf("%w: %w", core.ErrTransport, errResponseBodyTooLarge))
+		return
+	}
+	if len(body) == 0 {
 		return
 	}
 	d.deliver(body)
 }
 
-// deliver hands one frame to Receive, returning false once the transport is closed so the
+// deliver hands one frame to Receive, returning false once the transport has ended so the
 // reader goroutine cannot block forever on an abandoned transport.
 func (d *httpDialer) deliver(frame []byte) bool {
 	select {
@@ -259,13 +299,30 @@ func (d *httpDialer) deliver(frame []byte) bool {
 	}
 }
 
-func (d *httpDialer) isClosed() bool {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	return d.closed
+// fail ends the transport with err as the cancellation cause, so every later Send and
+// Receive reports it. The first cause wins, so a failure never masks Close, nor the
+// reverse (context.CancelCauseFunc ignores later calls).
+func (d *httpDialer) fail(err error) {
+	d.cancel(err)
 }
 
-// closedErr is the typed error every post-Close operation returns.
+// doneErr reports the transport's terminal error, or nil while it is live.
+func (d *httpDialer) doneErr() error {
+	if d.ctx.Err() == nil {
+		return nil
+	}
+	return d.ctxErr()
+}
+
+// ctxErr reports why the transport ended: the cancellation cause Close or fail set.
+func (d *httpDialer) ctxErr() error {
+	if cause := context.Cause(d.ctx); cause != nil {
+		return cause
+	}
+	return d.closedErr()
+}
+
+// closedErr is the fallback typed error when the transport ended without a cause.
 func (d *httpDialer) closedErr() error {
 	return fmt.Errorf("%w: transport closed", core.ErrTransport)
 }
