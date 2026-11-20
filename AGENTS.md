@@ -125,6 +125,19 @@ anything.
   exist to catch.
 - `go.work` must name modules explicitly; never `go work use ./...`.
 
+## Local toolchain paths (binding)
+
+- **Never call, read, or resolve anything under `/opt/homebrew/bin`** — not even a version probe.
+  That Homebrew prefix is not ours.
+- Our Homebrew is `/Users/aiagent/homebrew/bin/brew`. Install and look up tools there.
+- `golangci-lint` at `/Users/aiagent/go/bin/golangci-lint` is v1.64.8 and cannot type-check a
+  package that imports the standard library under the go1.27 toolchain (`export data version 5
+  is greater than maximum supported version 2`). It reports exit 0 for packages that import
+  nothing, so that result is not evidence of linting. Linting real code needs a v2 binary, which
+  is not installed in our prefix yet.
+- **Never use `curl`.** Use `my_curl`, the alias for `/Users/aiagent/homebrew/opt/curl/bin/curl`.
+  Aliases do not exist in non-interactive shells, so invoke that absolute path directly.
+
 ## Commands
 
 ```bash
