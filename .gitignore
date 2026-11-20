@@ -37,6 +37,10 @@ docs/
 
 .pnpm-debug.log
 
+# make targets
+coverage.out
+coverage.html
+
 # thrash
 .DS_Store
 .idea
