@@ -1,19 +1,21 @@
 # AGENTS.md
 
-Independent Go SDK for the Model Context Protocol. **Pre-implementation**: there are zero
-`.go` files today, so `go build ./...` and `go vet ./...` print `"./..." matched no packages`.
-That is expected, not breakage.
+Independent Go SDK for the Model Context Protocol. **Implementation has begun**: `go.mod`,
+`go.work`, the six root package directories, `.golangci.yml`, and `.github/workflows/ci.yml` all
+exist, so `go build ./...` and `go vet ./...` compile real packages instead of printing
+`"./..." matched no packages`. Progress lives only in the checkboxes of
+`specs/001-go-mcp-sdk/tasks.md`.
 
 **Picking up interrupted work?** Jump to [Resuming an interrupted task](#resuming-an-interrupted-task) —
 a fresh session has no memory of what the previous one did, and this repo hides progress from git.
 
 ## Source of truth
 
-Implementation has not started. The design does exist, in a place `git status` will not show you:
+Implementation is under way. The design lives in a place `git status` will not show you:
 
 - `specs/001-go-mcp-sdk/` — `spec.md` (58 FR / 11 NFR / 15 SC), `plan.md`, `research.md` (R-001…R-019),
   `data-model.md`, `contracts/` (wire, core-api, transport, cli), `quickstart.md`, and
-  `tasks.md` (**125 tasks, all unchecked — this is the work queue**).
+  `tasks.md` (**125 tasks; its checkboxes are the work queue and the only progress record**).
 - `.specify/memory/constitution.md` — binding: 11 principles, merge gates, and the task
   iteration protocol. Read it before implementing anything.
 - `docs/decisions/0001-protocol-eras.md` — the FR-056 era decision record.
@@ -32,7 +34,7 @@ one in dependency order (Phase 1 → 9, ascending id within a phase). Derive it 
 
 ```bash
 grep -m1 '^- \[ \]' specs/001-go-mcp-sdk/tasks.md    # the next task
-grep -c '^- \[ \]'  specs/001-go-mcp-sdk/tasks.md    # how many remain (125 of 125 as of 2026-11-20)
+grep -c '^- \[ \]'  specs/001-go-mcp-sdk/tasks.md    # how many remain
 ```
 
 **2. Assume it was interrupted, not finished.** A task is checked only *after its tests pass*, so an
@@ -141,15 +143,24 @@ anything.
 ## Commands
 
 ```bash
-go build ./...            # no-op until packages exist
+go build ./...            # compiles the six root packages today
 go vet ./...
 go test -race ./...       # required by NFR-006
 go test ./core -run TestDecode -race        # single package / single test
 GOWORK=off go list -m all                   # inside a temp consumer module: dependency leakage
 ```
 
-No linter is configured yet — `.golangci.yml` does not exist (task T004 adds it). No CI workflows
-exist yet (`.github/` is absent; task T005). Do not assume either exists.
+Lint is configured in `.golangci.yml` — golangci-lint **v2 schema**: `govet`, `staticcheck`,
+`errcheck` as linters; `gofmt`, `goimports` as formatters; `default: none` so the set cannot drift
+when upstream defaults change. `.github/workflows/ci.yml` runs it pinned to a v2 release.
+
+```bash
+golangci-lint run ./...     # v2 ONLY. v1.64.8 prints "0 issues" for real code and exits 0.
+golangci-lint cache clean   # stale cache can hide a violation; clean before trusting a run
+```
+
+Verified against golangci-lint 2.15.0. The installed `/Users/aiagent/go/bin/golangci-lint` is v1
+and must not be used — see "Local toolchain paths".
 
 Artifact-scope check (SC-006), reproducible without tooling:
 
@@ -158,7 +169,9 @@ git ls-tree -r --name-only <rev> -- specs .specify .opencode docs   # expect: no
 git archive --format=tar <rev> | tar -tf - | grep -E '^(specs|\.specify|\.opencode|docs)/'   # expect: no match
 ```
 
-Only `.gitignore`, `LICENSE`, `README.md`, and `go.mod` are tracked today.
+Everything outside the four untracked artifact directories is tracked. The empty directories
+(`internal/`, `adapters/*`, `config/`, `cmd/`) are not recordable by git until their first file
+lands (T070, T073, T077, T081, T108, T112) — a fresh clone will not contain them yet.
 
 ## Conventions that differ from defaults
 
