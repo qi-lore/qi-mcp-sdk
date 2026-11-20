@@ -1,0 +1,21 @@
+# Configured linter set (NFR-006): go vet, staticcheck, errcheck, plus gofmt and
+# goimports. `default: none` is deliberate — the set is exactly these five tools,
+# so a CI run cannot drift when upstream defaults change. Enabling another
+# linter or formatter is a reviewable edit to this file.
+#
+# Schema: golangci-lint v2 (`version: "2"`); gofmt/goimports are formatters in v2,
+# not linters. Verified against golangci-lint 2.15.0.
+
+version: "2"
+
+linters:
+  default: none
+  enable:
+    - errcheck
+    - govet
+    - staticcheck
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
