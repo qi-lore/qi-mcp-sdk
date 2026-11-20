@@ -37,6 +37,12 @@ grep -m1 '^- \[ \]' specs/001-go-mcp-sdk/tasks.md    # the next task
 grep -c '^- \[ \]'  specs/001-go-mcp-sdk/tasks.md    # how many remain
 ```
 
+**Order exceptions.** A task line may carry an `**Order exception (user-approved, …)**` note that
+overrides the ascending-id rule — the `grep` above still returns that task, so read the line before
+starting it. Ordering exceptions are recorded where they belong, in `tasks.md` under *Dependencies &
+Execution Order*, and repeated on the affected task line so a mechanical pick cannot miss it. Do not
+act on a task whose line says to run a different one first.
+
 **2. Assume it was interrupted, not finished.** A task is checked only *after its tests pass*, so an
 unchecked task may already have partial or complete work in the tree. Conversely, never assume a
 checked task is trustworthy — verify before building on it.
